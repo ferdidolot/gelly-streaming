@@ -27,10 +27,13 @@ import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.IterativeStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.util.Collector;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The Connected Components algorithm assigns a component ID to each vertex in the graph.
@@ -42,6 +45,8 @@ import org.apache.flink.util.Collector;
  */
 public class IterativeConnectedComponents implements ProgramDescription {
 
+
+	private static final Logger LOG = LoggerFactory.getLogger(IterativeConnectedComponents.class);
 	public static void main(String[] args) throws Exception {
 
 		// Set up the environment
@@ -51,27 +56,39 @@ public class IterativeConnectedComponents implements ProgramDescription {
 
 		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-		DataStream<Tuple2<Long, Long>> edges = getEdgesDataSet(env);
+		DataStream<Tuple4<Long, Long, Long, Long>> edges = getEdgesDataSet(env);
 
-		IterativeStream<Tuple2<Long, Long>> iteration = edges.iterate(5000);
-		DataStream<Tuple2<Long, Long>> result = iteration.closeWith(
+		IterativeStream<Tuple4<Long, Long, Long, Long>> iteration = edges.iterate(15000);
+		DataStream<Tuple4<Long, Long, Long, Long>> result = iteration.closeWith(
 				iteration.keyBy(0).flatMap(new AssignComponents()));
 
 		// Emit the results
-		result.print();
+		result.map(new MapFunction<Tuple4<Long,Long,Long,Long>, Tuple4<Long, Long, Long, Long>>() {
+			@Override
+			public Tuple4<Long, Long, Long, Long> map(Tuple4<Long, Long, Long, Long> value) throws Exception {
+				if (LOG.isDebugEnabled()) {
+					long totalTime = System.currentTimeMillis() - value.f2;
+					// initial vertex, converge vertex value, number of iteration, total time, average time per iteration
+					LOG.debug("{},{},{},{},{}", value.f0, value.f1, value.f3, totalTime, totalTime / value.f3);
+				}
+				return value;
+			}
+		}).print();
 
 		env.execute("Streaming Connected Components");
 	}
 
 	@SuppressWarnings("serial")
-	public static class AssignComponents extends RichFlatMapFunction<Tuple2<Long, Long>, Tuple2<Long, Long>> {
+	public static class AssignComponents extends RichFlatMapFunction<Tuple4<Long, Long, Long, Long>, Tuple4<Long, Long, Long, Long>> {
 
 		private HashMap<Long, HashSet<Long>> components = new HashMap<>();
 
 		@Override
-		public void flatMap(Tuple2<Long, Long> edge, Collector<Tuple2<Long, Long>> out) {
+		public void flatMap(Tuple4<Long, Long, Long, Long> edge, Collector<Tuple4<Long, Long, Long, Long>> out) {
 			final long sourceId = edge.f0;
 			final long targetId = edge.f1;
+			final long sourceTime = edge.f2;
+			final long iteration = edge.f3;
 			long sourceComp = -1;
 			long trgComp = -1;
 
@@ -90,12 +107,12 @@ public class IterativeConnectedComponents implements ProgramDescription {
 				// the source belongs to an existing component
 				if (trgComp != -1) {
 					// merge the components
-					merge(sourceComp, trgComp, out);
+					merge(sourceComp, trgComp, sourceTime, iteration, out);
 				}
 				else {
 					// add the target to the source's component
 					// and update the component Id if needed
-					addToExistingComponent(sourceComp, targetId, out);
+					addToExistingComponent(sourceComp, targetId, sourceTime, iteration, out);
 				}
 			}
 			else {
@@ -103,32 +120,32 @@ public class IterativeConnectedComponents implements ProgramDescription {
 				if (trgComp != -1) {
 					// add the source to the target's component
 					// and update the component Id if needed
-					addToExistingComponent(trgComp, sourceId, out);
+					addToExistingComponent(trgComp, sourceId, sourceTime, iteration, out);
 				}
 				else {
 					// neither src nor trg belong to any component
 					// create a new component and add them in it
-					createNewComponent(sourceId, targetId, out);
+					createNewComponent(sourceId, targetId, sourceTime, iteration, out);
 				}
 			}
 		}
 
-		private void createNewComponent(long sourceId, long targetId, Collector<Tuple2<Long, Long>> out) {
+		private void createNewComponent(long sourceId, long targetId, long sourceTime, long iteration, Collector<Tuple4<Long, Long, Long, Long>> out) {
 			long componentId = Math.min(sourceId, targetId);
 			HashSet<Long> vertexSet = new HashSet<>();
 			vertexSet.add(sourceId);
 			vertexSet.add(targetId);
 			components.put(componentId, vertexSet);
-			out.collect(new Tuple2<Long, Long>(sourceId, componentId));
-			out.collect(new Tuple2<Long, Long>(targetId, componentId));
+			out.collect(new Tuple4<Long, Long, Long, Long>(sourceId, componentId, sourceTime, iteration + 1));
+			out.collect(new Tuple4<Long, Long, Long, Long>(targetId, componentId, sourceTime, iteration + 1));
 		}
 
-		private void addToExistingComponent(long componentId, long toAdd, Collector<Tuple2<Long, Long>> out) {
+		private void addToExistingComponent(long componentId, long toAdd, long sourceTime, long iteration, Collector<Tuple4<Long, Long, Long, Long>> out) {
 			HashSet<Long> vertices = components.remove(componentId);
 			if (componentId >= toAdd) {
 				// output and update component ID
 				for (long v: vertices) {
-					out.collect(new Tuple2<Long, Long>(v, toAdd));
+					out.collect(new Tuple4<Long, Long, Long, Long >(v, toAdd, sourceTime, iteration + 1));
 				}
 				vertices.add(toAdd);
 				vertices.add(componentId);
@@ -137,11 +154,11 @@ public class IterativeConnectedComponents implements ProgramDescription {
 			else {
 				vertices.add(toAdd);
 				components.put(componentId, vertices);
-				out.collect(new Tuple2<Long, Long>(toAdd, componentId));
+				out.collect(new Tuple4<Long, Long, Long, Long>(toAdd, componentId, sourceTime, iteration + 1));
 			}
 		}
 
-		private void merge(long sourceComp, long trgComp, Collector<Tuple2<Long, Long>> out) {
+		private void merge(long sourceComp, long trgComp, long sourceTime, long iteration, Collector<Tuple4<Long, Long, Long, Long>> out) {
 			HashSet<Long> srcVertexSet = components.remove(sourceComp);
 			HashSet<Long> trgVertexSet = components.remove(trgComp);
 			long componentId = Math.min(sourceComp, trgComp);
@@ -149,7 +166,7 @@ public class IterativeConnectedComponents implements ProgramDescription {
 				// collect the trgVertexSet
 				if (trgVertexSet!= null) {
 					for (long v: trgVertexSet) {
-						out.collect(new Tuple2<Long, Long>(v, componentId));
+						out.collect(new Tuple4<>(v, componentId, sourceTime, iteration + 1));
 					}
 				}
 			}
@@ -157,7 +174,7 @@ public class IterativeConnectedComponents implements ProgramDescription {
 				// collect the srcVertexSet
 				if (srcVertexSet != null) {
 					for (long v: srcVertexSet) {
-						out.collect(new Tuple2<Long, Long>(v, componentId));
+						out.collect(new Tuple4<Long, Long, Long, Long>(v, componentId, sourceTime, iteration + 1));
 					}
 				}
 			}
@@ -196,28 +213,28 @@ public class IterativeConnectedComponents implements ProgramDescription {
 	}
 
 	@SuppressWarnings("serial")
-	private static DataStream<Tuple2<Long, Long>> getEdgesDataSet(StreamExecutionEnvironment env) {
+	private static DataStream<Tuple4<Long, Long, Long, Long>> getEdgesDataSet(StreamExecutionEnvironment env) {
 
 		if (fileOutput) {
 			return env.readTextFile(edgeInputPath)
-					.map(new MapFunction<String, Tuple2<Long, Long>>() {
+					.map(new MapFunction<String, Tuple4<Long, Long, Long, Long>>() {
 						@Override
-						public Tuple2<Long, Long> map(String s) {
+						public Tuple4<Long, Long, Long, Long> map(String s) {
 							String[] fields = s.split("\\t");
 							long src = Long.parseLong(fields[0]);
 							long trg = Long.parseLong(fields[1]);
-							return new Tuple2<>(src, trg);
+							return new Tuple4<>(src, trg, System.currentTimeMillis(), 0L);
 						}
 					});
 		}
 
 		return env.generateSequence(1, 10).flatMap(
-				new FlatMapFunction<Long, Tuple2<Long, Long>>() {
+				new FlatMapFunction<Long, Tuple4<Long, Long, Long, Long>>() {
 					@Override
-					public void flatMap(Long key, Collector<Tuple2<Long, Long>> out) throws Exception {
+					public void flatMap(Long key, Collector<Tuple4<Long, Long, Long, Long>> out) throws Exception {
 						for (int i = 1; i < 3; i++) {
 							long target = key + i;
-							out.collect(new Tuple2<>(key, target));
+							out.collect(new Tuple4<>(key, target, System.currentTimeMillis(), 0L) );
 						}
 					}
 				});
