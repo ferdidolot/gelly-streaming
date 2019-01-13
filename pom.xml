@@ -84,6 +84,25 @@
                     </execution>
 
                     <execution>
+                        <id>IterativeConnectedComponents</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                        <configuration>
+                            <classifier>IterativeConnectedComponents</classifier>
+
+                            <archive>
+                                <manifestEntries>
+                                    <program-class>
+                                        org.apache.flink.graph.streaming.example.IterativeConnectedComponents
+                                    </program-class>
+                                </manifestEntries>
+                            </archive>
+                        </configuration>
+                    </execution>
+
+                    <execution>
                         <id>BipartiteMeasurement</id>
                         <phase>package</phase>
                         <goals>
