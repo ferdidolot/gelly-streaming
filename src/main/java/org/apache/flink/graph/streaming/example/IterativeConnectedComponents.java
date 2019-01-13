@@ -53,7 +53,7 @@ public class IterativeConnectedComponents implements ProgramDescription {
 
 		DataStream<Tuple2<Long, Long>> edges = getEdgesDataSet(env);
 
-		IterativeStream<Tuple2<Long, Long>> iteration = edges.iterate();
+		IterativeStream<Tuple2<Long, Long>> iteration = edges.iterate(5000);
 		DataStream<Tuple2<Long, Long>> result = iteration.closeWith(
 				iteration.keyBy(0).flatMap(new AssignComponents()));
 
@@ -131,9 +131,11 @@ public class IterativeConnectedComponents implements ProgramDescription {
 					out.collect(new Tuple2<Long, Long>(v, toAdd));
 				}
 				vertices.add(toAdd);
+				vertices.add(componentId);
 				components.put(toAdd, vertices);
 			}
 			else {
+				vertices.add(toAdd);
 				components.put(componentId, vertices);
 				out.collect(new Tuple2<Long, Long>(toAdd, componentId));
 			}
